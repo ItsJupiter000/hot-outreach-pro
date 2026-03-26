@@ -9,23 +9,37 @@ set -e
 echo "=== OutreachBot EC2 Setup ==="
 
 # --- 1. Update system ---
-echo "[1/7] Updating system packages..."
+echo "[1/8] Updating system packages..."
 sudo apt-get update -y && sudo apt-get upgrade -y
 
+# --- 1.5. Setup swap (prevents OOM during build on low-memory instances) ---
+echo "[2/8] Setting up swap space..."
+if [ ! -f /swapfile ]; then
+  sudo fallocate -l 2G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  echo "2GB swap created."
+else
+  sudo swapon /swapfile 2>/dev/null || true
+  echo "Swap already exists."
+fi
+
 # --- 2. Install Node.js 20 LTS ---
-echo "[2/7] Installing Node.js 20..."
+echo "[3/8] Installing Node.js 20..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
 echo "Node version: $(node -v)"
 echo "NPM version: $(npm -v)"
 
-# --- 3. Install Git & Nginx ---
-echo "[3/7] Installing Git and Nginx..."
+# --- 4. Install Git & Nginx ---
+echo "[4/8] Installing Git and Nginx..."
 sudo apt-get install -y git nginx
 
-# --- 4. Clone the repository ---
-echo "[4/7] Cloning repository..."
+# --- 5. Clone the repository ---
+echo "[5/8] Cloning repository..."
 cd /home/ubuntu
 if [ -d "hot-outreach-pro" ]; then
   echo "Directory exists, pulling latest..."
@@ -37,11 +51,11 @@ else
   cd hot-outreach-pro
 fi
 
-# --- 5. Install dependencies & build ---
-echo "[5/7] Installing dependencies..."
+# --- 6. Install dependencies & build ---
+echo "[6/8] Installing dependencies..."
 npm ci --production=false
 
-echo "[5/7] Creating .env file..."
+echo "[6/8] Creating .env file..."
 if [ ! -f .env ]; then
   echo ">>> No .env file found. Creating from .env.example..."
   cp .env.example .env
@@ -49,11 +63,12 @@ if [ ! -f .env ]; then
   echo ">>>   nano /home/ubuntu/hot-outreach-pro/.env"
 fi
 
-echo "[5/7] Building Next.js app..."
+echo "[6/8] Building Next.js app (this may take a few minutes)..."
+export NODE_OPTIONS="--max-old-space-size=1024"
 npm run build
 
-# --- 6. Setup PM2 for process management ---
-echo "[6/7] Setting up PM2..."
+# --- 7. Setup PM2 for process management ---
+echo "[7/8] Setting up PM2..."
 sudo npm install -g pm2
 
 # Start the app with PM2
@@ -63,8 +78,8 @@ pm2 start npm --name "hot-outreach-pro" -- start
 pm2 save
 pm2 startup systemd -u ubuntu --hp /home/ubuntu | tail -1 | sudo bash
 
-# --- 7. Setup Nginx reverse proxy ---
-echo "[7/7] Configuring Nginx..."
+# --- 8. Setup Nginx reverse proxy ---
+echo "[8/8] Configuring Nginx..."
 sudo tee /etc/nginx/sites-available/hot-outreach > /dev/null << 'NGINXEOF'
 server {
     listen 80;
