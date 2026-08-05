@@ -69,14 +69,6 @@ export async function sendEmailForUser(
     html,
     // replyTo matching sender — tells Gmail this is a real person's email
     replyTo: fromEmail,
-    // Generate a proper messageId using the sender's domain
-    // (mismatched domains in messageId trigger spam filters)
-    messageId: `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`,
-    // Envelope ensures the SMTP MAIL FROM matches the header From
-    envelope: {
-      from: fromEmail,
-      to: to,
-    },
   };
 
   // Only add attachments if present (empty attachment arrays can be suspicious)
@@ -105,11 +97,6 @@ export async function sendEmail(
     text: htmlToPlainText(html),
     html,
     replyTo: fromEmail,
-    messageId: `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`,
-    envelope: {
-      from: fromEmail,
-      to: to,
-    },
   };
 
   if (attachments && attachments.length > 0) {
