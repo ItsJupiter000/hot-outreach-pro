@@ -81,11 +81,30 @@ async function executeEmailSend(
 
   const trackingBaseUrl = process.env.NEXT_PUBLIC_APP_URL || `${protocol}://${host}`;
   const trackingUrl = `${trackingBaseUrl}/api/track/open/${appRecord.id}`;
-  const trackingPixel = `<img src="${trackingUrl}" width="1" height="1" alt="" style="display:none;" />`;
-  const htmlWithTracking = finalHtml + trackingPixel;
+  // Use a proper 1x1 pixel without display:none (display:none is a spam trigger).
+  // The pixel is appended at the very end of the HTML body before the closing tag.
+  const trackingPixel = `<img src="${trackingUrl}" width="1" height="1" border="0" alt="" />`;
+  // Insert before </body> if present, otherwise append
+  const htmlWithTracking = finalHtml.includes("</body>")
+    ? finalHtml.replace("</body>", `${trackingPixel}</body>`)
+    : finalHtml + trackingPixel;
+
+  // Generate a plain-text version to reduce spam score (multipart/alternative)
+  const plainText = finalHtml
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<p[^>]*>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 
   try {
-    await sendEmailForUser(profile, input.email, finalSubject, htmlWithTracking, attachments as any);
+    await sendEmailForUser(profile, input.email, finalSubject, htmlWithTracking, attachments as any, plainText);
   } catch (emailErr) {
     console.error("Email send failed:", emailErr);
     await storage.deleteApplication(appRecord.id);

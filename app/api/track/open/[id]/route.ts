@@ -9,7 +9,14 @@ export async function GET(
     const { id } = await params;
     const appRecord = await storage.getApplication(id);
     if (appRecord && appRecord.status === "Applied") {
-      await storage.updateApplication(id, { status: "Opened" });
+      // Guard against SMTP relay / email preview bots that fetch the pixel
+      // immediately after delivery. Only mark "Opened" if the email was sent
+      // more than 2 minutes ago — real human opens always happen later.
+      const sentAt = new Date(appRecord.sentAt).getTime();
+      const twoMinutesMs = 2 * 60 * 1000;
+      if (Date.now() - sentAt >= twoMinutesMs) {
+        await storage.updateApplication(id, { status: "Opened" });
+      }
     }
   } catch (e) {
     console.error("Tracking pixel error:", e);

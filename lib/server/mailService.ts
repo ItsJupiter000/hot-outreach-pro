@@ -32,12 +32,28 @@ export async function sendEmailForUser(
   to: string,
   subject: string,
   html: string,
-  attachments?: { filename: string; path: string }[]
+  attachments?: { filename: string; content: Buffer }[],
+  plainText?: string
 ) {
   const transporter = getTransporterForUser(profile);
   const fromName = profile?.fullName || "Job Bot";
   const fromEmail = profile?.smtpUser || profile?.email || "bot@local.dev";
-  return transporter.sendMail({ from: `"${fromName}" <${fromEmail}>`, to, subject, html, attachments });
+
+  return transporter.sendMail({
+    from: `"${fromName}" <${fromEmail}>`,
+    to,
+    subject,
+    // Always include plain-text alternative — reduces spam score significantly
+    text: plainText || html.replace(/<[^>]+>/g, "").trim(),
+    html,
+    attachments,
+    headers: {
+      // Helps prevent being flagged as bulk/automated mail
+      "X-Priority": "3",
+      "X-Mailer": "",          // suppress default nodemailer X-Mailer header
+      "Mime-Version": "1.0",
+    },
+  });
 }
 
 export async function sendEmail(to: string, subject: string, html: string, attachments?: { filename: string, path: string }[]) {
