@@ -10,6 +10,7 @@ echo "Installing dependencies..."
 npm ci --production=false
 
 echo "Building..."
+export NODE_OPTIONS="--max-old-space-size=1024"
 npm run build
 
 echo "Restarting app..."
