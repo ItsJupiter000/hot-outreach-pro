@@ -1,3 +1,15 @@
+// KNOWN VIOLATION — scheduled to be removed in Stage 5.1 (see
+// docs/devops/01-eslint-and-ci-gates.md and the migration plan).
+//
+// This module stores the pending-email queue in a JSON file on local disk. That
+// makes the app unsafe to run as more than one replica (each replica gets its
+// own queue file), and popDueEmails() deletes due rows BEFORE attempting the
+// send, so a crash loses those emails permanently.
+//
+// It is being replaced by a Postgres `scheduled_emails` table with an atomic
+// claim (FOR UPDATE SKIP LOCKED). Deleting this disable comment is part of that
+// change — the lint rule then prevents local-disk state from ever coming back.
+// eslint-disable-next-line no-restricted-imports
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";

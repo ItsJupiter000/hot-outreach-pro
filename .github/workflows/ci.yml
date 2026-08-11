@@ -1,0 +1,122 @@
+name: CI
+
+# Run on every push to main and every pull request targeting it.
+#
+# `paths-ignore` on deploy/** matters later: once ArgoCD is wired up, CI will
+# commit an image-tag bump into deploy/values-prod.yaml. Without this filter,
+# that commit re-triggers CI, which builds and bumps again — an infinite loop.
+# Adding it now means we cannot forget it then.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "deploy/**"
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "deploy/**"
+      - "docs/**"
+      - "**/*.md"
+
+# Cancel an in-progress run when a newer commit lands on the same ref.
+# Without this, pushing three times in a minute runs three full pipelines and
+# you wait for results you no longer care about.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege. The default for a repo can be read/write on everything;
+# this job only needs to read code. Jobs that need more (OIDC to AWS, pushing a
+# manifest bump) will declare it explicitly when we add them in Stage 2.
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, typecheck, secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan commits, not just the current tree.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Read the version from .nvmrc so there is exactly ONE source of truth
+          # for the Node version: this file, package.json engines, and the
+          # Dockerfile base image all trace back to it. Hardcoding "20" here is
+          # how the local/CI/image drift starts.
+          node-version-file: .nvmrc
+          # Caches ~/.npm keyed on package-lock.json. Cuts install from ~60s to
+          # ~15s. Note this caches the npm *download* cache, not node_modules —
+          # `npm ci` still does a clean install, which is the point.
+          cache: npm
+
+      - name: Install dependencies
+        # `npm ci` (not `npm install`) — it installs exactly the lockfile and
+        # FAILS if package.json and package-lock.json disagree. That is a free
+        # integrity gate: it catches a hand-edited package.json, and it catches
+        # a lockfile written by a different npm major than the one running here.
+        run: npm ci
+
+      - name: Typecheck
+        # The highest-value gate available in this repo. `strict: true` is
+        # already on in tsconfig.json, and there are currently ZERO tests, so
+        # this is the only real correctness check we have.
+        #
+        # --incremental false is not optional: tsconfig.tsbuildinfo records
+        # "which files did I already check", and a stale one makes tsc silently
+        # SKIP files. A typecheck that checks nothing but exits 0 is worse than
+        # no typecheck, because it produces a green checkmark that means nothing.
+        run: npx tsc --noEmit --incremental false
+
+      - name: Lint
+        # --max-warnings is a ratchet, not a threshold.
+        #
+        # There are 140 pre-existing warnings (mostly `any` in the storage row
+        # mappers and unused vars). Errors are already at 0, so this step BLOCKS
+        # on any new error. Pinning warnings at the current count means a PR that
+        # adds a 141st warning fails, but nobody is blocked on cleaning up debt
+        # they did not create. Lower this number as the debt is paid down; never
+        # raise it.
+        run: npx eslint . --max-warnings 140
+
+      - name: Dependency audit (blocking — production criticals only)
+        # Deliberately narrow. `npm audit` in its default form is noisy: it
+        # reports dev-only transitive advisories that cannot be exploited in a
+        # built container, and its severity mapping is generous. A gate that
+        # fires constantly is a gate people learn to bypass.
+        #
+        # Scoping to --omit=dev --audit-level=critical gives a small, genuinely
+        # high-signal set that should always be zero. Currently it IS zero.
+        run: npm audit --omit=dev --audit-level=critical
+
+      - name: Dependency audit (advisory — full report)
+        # Non-blocking, but always visible in the run log. As of the last check
+        # there are 9 advisories including HIGH severity in `next`, `nodemailer`,
+        # `postcss`, and `sharp` — see docs/devops/01-eslint-and-ci-gates.md.
+        # Two of those are directly exploitable in this app and are tracked as
+        # priority upgrades, not as audit noise.
+        #
+        # The durable fix for dependency hygiene is Dependabot/Renovate opening
+        # upgrade PRs, not a gate that blocks unrelated work.
+        run: npm audit || true
+        continue-on-error: true
+
+      - name: Scan for committed secrets
+        # Directly relevant here: a .env file with a live Supabase service-role
+        # key and a Gmail app password sits in the working tree. It is correctly
+        # gitignored — but one `git add -f` away from being public forever.
+        #
+        # If this ever fires: ROTATE THE KEY FIRST. Rewriting git history without
+        # rotating is security theatre, because the old objects still exist in
+        # every clone and in GitHub's fork network.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

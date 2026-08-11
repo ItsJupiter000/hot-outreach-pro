@@ -197,7 +197,7 @@ export default function Home() {
         className="mb-8"
       >
         <h1 className="text-3xl font-display font-black text-foreground tracking-tight">Main Dashboard</h1>
-        <p className="text-muted-foreground mt-1 font-medium italic">Welcome back! Here's your dashboard summary.</p>
+        <p className="text-muted-foreground mt-1 font-medium italic">Welcome back! Here&apos;s your dashboard summary.</p>
       </motion.div>
 
       {/* Compact Quick Access Section */}
