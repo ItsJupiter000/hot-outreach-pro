@@ -65,23 +65,29 @@ Docs: `00-prerequisites.md`, `01-eslint-and-ci-gates.md`
 
 ---
 
-### Stage 1 — Security upgrades · $0 · **do this before building an image**
+### ✅ Stage 1 — Security upgrades · $0 · **done**
 
-Upgrade `next` (HIGH: **Middleware/Proxy bypass in App Router**) and `nodemailer` (HIGH: **SMTP
-command injection + header injection via CRLF**).
+`next` 15.5.14 → **15.5.23**, `nodemailer` 8.0.4 → **9.0.5**, `imapflow` → 1.6.6, `postcss` → 8.5.26.
 
-**Why here and not later:** this app's entire authorization model is `middleware.ts`, and because all
-server code uses the Supabase service-role key, RLS is bypassed — so there is **no second line of
-defence** behind the middleware. A middleware bypass is an auth bypass. And header injection in an
-outreach tool means forged `From`/`Reply-To` from your domain.
+**Why before the Dockerfile:** this app's entire authorization model is `middleware.ts`, and because
+all server code uses the Supabase service-role key, RLS is bypassed — there is **no second line of
+defence** behind the middleware. A middleware bypass is an auth bypass. Baking that into an immutable
+image and putting it on a public ALB is the wrong order of operations.
 
-Building a container image around a known auth bypass, then putting it on a public ALB, is the wrong
-order of operations.
+**The finding worth remembering:** `npm audit` recommended Next **16.3.0** (`isSemVerMajor: true`),
+which would have forced a React 18 → 19 migration. But npm's `fixAvailable` is the version that
+clears *all* advisories including **inherited** ones, so it systematically over-recommends majors.
+Checking `via` after upgrading to the `backport` dist-tag (15.5.23) gave `["postcss","sharp"]` — plain
+strings, no advisory objects — meaning **every direct Next.js CVE was already fixed**. Four residual
+advisories remain, all verified unreachable (`sharp` never invoked because `images.unoptimized: true`;
+`ws` never instantiated because the app uses no Supabase Realtime).
 
-**Risk:** `nodemailer` 8 → 9 is a major bump; the API needs checking against `mailService.ts` and
-`imapService.ts`. `next` needs a build + middleware re-verification.
+Doc: `02-security-upgrades.md` — includes the reachability method, and four measurements that shape
+the Dockerfile (943 MB peak build RSS, the `.env`-in-standalone leak, the `HOSTNAME` inversion, and
+SIGTERM exiting in 14 ms with no drain).
 
-🔵 upgrade and verify · 🟡 confirm email sending still works end to end
+🟡 **still to do: send one real email end to end.** `tsc` and `next build` prove it compiles against
+nodemailer 9; they cannot prove the SMTP conversation works.
 
 ---
 
