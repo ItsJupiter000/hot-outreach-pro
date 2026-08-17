@@ -35,7 +35,17 @@ export async function updateSession(request: NextRequest) {
 
   const isPublicApi =
     request.nextUrl.pathname.startsWith("/api/track/") ||
-    request.nextUrl.pathname.startsWith("/api/cron");
+    request.nextUrl.pathname.startsWith("/api/cron") ||
+    // Kubernetes probes. Also excluded from the matcher in middleware.ts, so in
+    // practice we never get here — this is defence against a bad regex edit.
+    request.nextUrl.pathname === "/api/healthz" ||
+    request.nextUrl.pathname === "/api/readyz" ||
+    // BUG FIX: /auth/callback was missing, which broke email confirmation
+    // outright. A user clicking a Supabase confirmation link has no session yet,
+    // so this middleware 307'd them to /login and the `code` was never exchanged
+    // for a session. The whole point of the callback route is to be reached
+    // WITHOUT a session.
+    request.nextUrl.pathname === "/auth/callback";
 
   // If no user and trying to access protected route
   if (!user && !isAuthPage && !isPublicApi) {
