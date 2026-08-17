@@ -24,11 +24,19 @@ terraform {
   # NOTE: state contains secrets in plaintext -- which is why *.tfstate is in
   # .gitignore and the bucket is encrypted and private.
   backend "s3" {
-    bucket         = "hot-outreach-tfstate-984174955350"
-    key            = "platform/terraform.tfstate"
-    region         = "ap-south-1"
-    dynamodb_table = "hot-outreach-tflock"
-    encrypt        = true
+    bucket = "hot-outreach-tfstate-984174955350"
+    key    = "platform/terraform.tfstate"
+    region = "ap-south-1"
+
+    # S3 NATIVE LOCKING (Terraform >= 1.10, GA in 1.11).
+    #
+    # Replaces the old `dynamodb_table` parameter, which is now deprecated. S3
+    # gained conditional writes, so the lock is a .tflock object next to the state
+    # rather than a separate DynamoDB table. Same mutual-exclusion guarantee, one
+    # fewer resource to create, pay for, and remember to keep out of `destroy`.
+    use_lockfile = true
+
+    encrypt = true
   }
 }
 
