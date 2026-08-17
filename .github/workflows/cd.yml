@@ -82,26 +82,18 @@ jobs:
           echo "uri=${{ vars.ECR_REPOSITORY }}:${TAG}"         >> "$GITHUB_OUTPUT"
           echo "Building ${{ vars.ECR_REPOSITORY }}:${TAG}"
 
-      # TEMPORARY DIAGNOSTIC — remove once OIDC is confirmed working.
+      # Debugging note, kept because this failure mode is opaque:
+      # if this step ever returns "Not authorized to perform
+      # sts:AssumeRoleWithWebIdentity", AWS will not tell you which claim it
+      # rejected. Read the real `sub` out of CloudTrail, which records it in the
+      # Username field:
       #
-      # Prints the OIDC token's identity claims (NOT the token itself). The `sub`
-      # claim is what the IAM trust policy matches against, so seeing its actual
-      # value is the only way to debug "Not authorized to perform
-      # sts:AssumeRoleWithWebIdentity" without guesswork -- the AWS side gives no
-      # indication of what it received.
+      #   aws cloudtrail lookup-events --region ap-south-1 \
+      #     --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity \
+      #     --max-results 5 --query 'Events[].{time:EventTime,user:Username}' --output table
       #
-      # These claims are not secrets: they describe which repo/ref is running.
-      - name: Debug OIDC claims
-        run: |
-          set -euo pipefail
-          TOKEN=$(curl -sH "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+')
-          while [ $(( ${#PAYLOAD} % 4 )) -ne 0 ]; do PAYLOAD="${PAYLOAD}="; done
-          echo "$PAYLOAD" | base64 -d 2>/dev/null \
-            | jq '{sub, aud, repository, repository_owner, ref, ref_type, event_name, workflow}'
-          echo "role-to-assume input is: '${{ vars.AWS_ROLE_ARN }}'"
-
+      # That is how we found the repo had been renamed (hot-outreact-pro ->
+      # hot-outreach-pro) while the git remote still used the old, redirected name.
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:

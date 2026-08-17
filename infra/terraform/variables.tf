@@ -17,9 +17,27 @@ variable "github_owner" {
 }
 
 variable "github_repo" {
-  description = "Repository name. NOTE the upstream typo: the remote is 'hot-outreact-pro' (react, not reach). The OIDC trust policy must match the ACTUAL repo name or every CI auth attempt fails with a confusing AccessDenied."
+  description = <<-EOT
+    Repository name AS GITHUB CURRENTLY KNOWS IT -- not necessarily what your git
+    remote says.
+
+    This cost an hour. The local remote is
+    https://github.com/ItsJupiter000/hot-outreact-pro.git (note: "outreact"), but
+    the repo was renamed to "hot-outreach-pro". GitHub permanently redirects the
+    old URL, so `git push` and `git fetch` keep working against the stale name --
+    while the OIDC token always carries the CURRENT name. The trust policy was
+    therefore matching a repo that no longer exists, and STS returned only
+    "Not authorized to perform sts:AssumeRoleWithWebIdentity" with no hint why.
+
+    To find the real value, read the `sub` claim out of CloudTrail (AWS records it
+    in the Username field for AssumeRoleWithWebIdentity):
+
+      aws cloudtrail lookup-events --region ap-south-1 \
+        --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity \
+        --max-results 5 --query 'Events[].{time:EventTime,user:Username}' --output table
+  EOT
   type        = string
-  default     = "hot-outreact-pro"
+  default     = "hot-outreach-pro"
 }
 
 variable "github_allowed_refs" {
@@ -36,21 +54,10 @@ variable "github_allowed_refs" {
   EOT
   type = list(string)
 
-  # TEMPORARILY WIDENED to unblock debugging.
-  #
-  # The exact-match value below is correct in theory and was verified against the
-  # git remote, yet STS still returned "Not authorized to perform
-  # sts:AssumeRoleWithWebIdentity" -- so the token's real `sub` differs from the
-  # expectation in some way AWS will not tell us. The "Debug OIDC claims" step in
-  # .github/workflows/cd.yml prints the actual claim.
-  #
-  # TIGHTEN THIS BACK once the real `sub` is known. A repo-wide wildcard permits
-  # ANY ref in this repository -- including a pull_request from a fork -- to
-  # obtain AWS credentials. That is acceptable for a few minutes on a private
-  # repo you own; it is not an acceptable end state.
-  #
-  #   correct end state: ["repo:ItsJupiter000/hot-outreact-pro:ref:refs/heads/main"]
-  default = ["repo:ItsJupiter000/hot-outreact-pro:*"]
+  # Exact match, no wildcard -- confirmed against the real `sub` claim observed in
+  # CloudTrail. Deliberately NOT "repo:owner/name:*", which would let any ref in
+  # the repository (including a pull_request from a fork) obtain AWS credentials.
+  default = ["repo:ItsJupiter000/hot-outreach-pro:ref:refs/heads/main"]
 }
 
 variable "image_retention_count" {
