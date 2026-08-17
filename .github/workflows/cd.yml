@@ -173,7 +173,10 @@ jobs:
           docker rm -f smoke >/dev/null
 
       - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        # NOTE: this action's tags are v-prefixed (v0.36.0), unlike many actions
+        # that publish bare semver. `@0.28.0` fails at "Prepare all required
+        # actions" with "unable to find version" before any step runs.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.meta.outputs.uri }}
           format: table
