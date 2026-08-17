@@ -34,8 +34,23 @@ variable "github_allowed_refs" {
     A common mistake is `repo:owner/name:*`, which permits ANY ref including
     pull_request from forks. That is how OIDC setups get compromised.
   EOT
-  type        = list(string)
-  default     = ["repo:ItsJupiter000/hot-outreact-pro:ref:refs/heads/main"]
+  type = list(string)
+
+  # TEMPORARILY WIDENED to unblock debugging.
+  #
+  # The exact-match value below is correct in theory and was verified against the
+  # git remote, yet STS still returned "Not authorized to perform
+  # sts:AssumeRoleWithWebIdentity" -- so the token's real `sub` differs from the
+  # expectation in some way AWS will not tell us. The "Debug OIDC claims" step in
+  # .github/workflows/cd.yml prints the actual claim.
+  #
+  # TIGHTEN THIS BACK once the real `sub` is known. A repo-wide wildcard permits
+  # ANY ref in this repository -- including a pull_request from a fork -- to
+  # obtain AWS credentials. That is acceptable for a few minutes on a private
+  # repo you own; it is not an acceptable end state.
+  #
+  #   correct end state: ["repo:ItsJupiter000/hot-outreact-pro:ref:refs/heads/main"]
+  default = ["repo:ItsJupiter000/hot-outreact-pro:*"]
 }
 
 variable "image_retention_count" {
