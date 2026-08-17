@@ -105,8 +105,33 @@ const schema = z.object({
 
 export type ServerEnv = z.infer<typeof schema>;
 
+/**
+ * Treat empty-string env vars as absent.
+ *
+ * This is not defensive fluff — it is required for Docker to work at all.
+ * `ARG FOO` + `ENV FOO=$FOO` with no `--build-arg FOO=...` yields `FOO=""`, not
+ * an unset variable. Two things then break in ways that are hard to trace:
+ *
+ *   NEXT_PUBLIC_APP_URL  z.string().url().optional() does NOT skip "" — it
+ *                        validates it as a URL and throws at module load. This
+ *                        actually broke the first Docker build:
+ *                        "Failed to collect page data for /api/readyz".
+ *   SHUTDOWN_DRAIN_MS    z.coerce.number() turns "" into 0, which passes
+ *                        .min(0) — so the drain silently becomes 0 ms and
+ *                        graceful shutdown quietly stops working.
+ *
+ * The second is the dangerous one: no error, no log, just the bug back.
+ */
+function stripEmpty(input: NodeJS.ProcessEnv): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== "") out[key] = value;
+  }
+  return out;
+}
+
 function load(): ServerEnv {
-  const parsed = schema.safeParse(process.env);
+  const parsed = schema.safeParse(stripEmpty(process.env));
 
   if (!parsed.success) {
     // Print every problem at once, not just the first. A pod that crash-loops

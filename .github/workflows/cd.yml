@@ -1,0 +1,203 @@
+name: CD
+
+# Push to main → build ARM64 image → scan → push to ECR tagged with the git SHA.
+#
+# The Kubernetes deploy is NOT here. Once ArgoCD is installed it watches deploy/
+# in git and pulls — CI never gets cluster credentials. That is the core GitOps
+# property: a compromised CI runner cannot reach your cluster.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "deploy/**"      # breaks the image-tag-bump → CI → bump loop
+      - "docs/**"
+      - "infra/**"
+      - "**/*.md"
+  workflow_dispatch:      # manual re-run without an empty commit
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a half-finished registry push
+
+permissions:
+  contents: read
+  id-token: write             # REQUIRED for OIDC. Without it the AWS login step
+                              # fails with a confusing "Credentials could not be
+                              # loaded" — there is no hint that this is the cause.
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Gate 1 — cheap checks first. No point spending 3 minutes on a Docker build
+  # and an ECR push if the code does not typecheck.
+  # ───────────────────────────────────────────────────────────────────────────
+  verify:
+    name: Typecheck & lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit --incremental false
+      - run: npx eslint . --max-warnings 140
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Gate 2 — build, scan, push.
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build, scan & push ARM64 image
+    needs: verify
+    # Native ARM64 runner. The alternative is buildx + QEMU emulation on x86,
+    # where `next build` runs roughly 10x slower and hits memory limits
+    # differently (measured peak build RSS for this app: 943 MB). Build on the
+    # architecture you deploy on.
+    #
+    # If ubuntu-24.04-arm is unavailable on your plan, switch to ubuntu-latest and
+    # add `platforms: linux/arm64` to the build step — but expect a slow build.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+      image_uri: ${{ steps.meta.outputs.uri }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: meta
+        # Tag = sha-<12 chars of the commit>. Never `latest`:
+        #  - a mutable tag makes "what is deployed?" unanswerable
+        #  - rollback becomes impossible, because the old tag may now point at
+        #    different bytes
+        #  - ArgoCD cannot tell that anything changed
+        # The ECR repo is IMMUTABLE, so a duplicate tag is rejected rather than
+        # silently overwritten.
+        run: |
+          TAG="sha-$(echo "${GITHUB_SHA}" | cut -c1-12)"
+          echo "tag=${TAG}"                                    >> "$GITHUB_OUTPUT"
+          echo "uri=${{ vars.ECR_REPOSITORY }}:${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "Building ${{ vars.ECR_REPOSITORY }}:${TAG}"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # No access keys anywhere. GitHub mints a short-lived JWT describing
+          # this repo + ref; AWS validates it against the role's trust policy and
+          # returns credentials that expire in an hour.
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          # Load into the local daemon rather than pushing, so the scan and smoke
+          # test run BEFORE anything reaches the registry. Pushing first and
+          # scanning after means a vulnerable image is already pullable.
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.uri }}
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_APP_URL=${{ vars.APP_URL }}
+          # GitHub Actions cache. The Dockerfile's `--mount=type=cache` for npm is
+          # builder-local and would be cold every run without this.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ─────────────────────────────────────────────────────────────────────
+      # Smoke test the actual artifact. This catches the three failure modes
+      # that a green `docker build` does NOT:
+      #   1. HOSTNAME binding — app unreachable inside the container
+      #   2. missing .next/static — unstyled, non-interactive page, no error
+      #   3. SIGTERM not reaching PID 1 — deploys hang then SIGKILL
+      # All three were real risks in this app; #3 is why CMD is exec-form.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Smoke test the image
+        env:
+          IMAGE: ${{ steps.meta.outputs.uri }}
+        run: |
+          set -euo pipefail
+
+          docker run -d --name smoke -p 3000:3000 \
+            -e NEXT_PUBLIC_SUPABASE_URL="${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" \
+            -e NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
+            -e ENABLE_INPROCESS_SCHEDULER=false \
+            "$IMAGE"
+
+          echo "::group::wait for readiness"
+          timeout 60 sh -c 'until curl -sf -o /dev/null http://127.0.0.1:3000/api/healthz; do sleep 1; done' \
+            || { echo "app never became healthy"; docker logs smoke; exit 1; }
+          echo "::endgroup::"
+
+          echo "--- liveness ---"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/healthz)" = "200"
+
+          echo "--- served page ---"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = "200"
+
+          echo "--- static assets resolve (catches the missing .next/static bug) ---"
+          CHUNK=$(curl -s http://127.0.0.1:3000/login \
+                  | grep -oE '/_next/static/chunks/[a-zA-Z0-9._-]+\.js' | head -1)
+          test -n "$CHUNK" || { echo "no chunk reference found in HTML"; exit 1; }
+          test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3000$CHUNK")" = "200"
+          echo "ok: $CHUNK"
+
+          echo "--- NEXT_PUBLIC_* actually inlined into the client bundle ---"
+          # A runtime env var CANNOT fix this: Next substitutes these at build
+          # time. If the build args were missing, the server would look fine and
+          # every browser login would silently fail.
+          curl -s "http://127.0.0.1:3000$CHUNK" | grep -q "supabase.co" \
+            || { echo "Supabase URL not inlined -- build args were not applied"; exit 1; }
+
+          echo "--- graceful shutdown: readiness must flip to 503 before exit ---"
+          docker exec smoke sh -c 'kill -TERM 1' || true
+          sleep 2
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/readyz || echo 000)
+          echo "readyz during drain: $CODE (expect 503)"
+          test "$CODE" = "503" || { echo "drain did not engage"; docker logs smoke; exit 1; }
+
+          docker rm -f smoke >/dev/null
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.uri }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          # --ignore-unfixed is not optional. Without it, base-image CVEs with no
+          # available patch block every single PR — a gate that can only be
+          # satisfied by disabling it, which teaches everyone to disable it.
+          ignore-unfixed: true
+          # Fail on real problems, not on a transient registry/DB hiccup.
+          timeout: 10m
+
+      - name: Push to ECR
+        run: docker push "${{ steps.meta.outputs.uri }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image published"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`${{ steps.meta.outputs.tag }}\` |"
+            echo "| URI | \`${{ steps.meta.outputs.uri }}\` |"
+            echo "| Arch | linux/arm64 (Graviton) |"
+            echo "| Commit | ${{ github.sha }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
